@@ -1,0 +1,21 @@
+# Python virtual environment
+backend/venv/
+
+# Node dependencies
+frontend/node_modules/
+
+# Environment files (contains secrets)
+backend/.env
+frontend/.env
+
+# Python cache
+backend/__pycache__/
+backend/*.pyc
+
+# VS Code settings
+.vscode/
+
+# Build artifacts (if any)
+dist/
+build/
+*.egg-info/
