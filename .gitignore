@@ -2,7 +2,7 @@
 backend/venv/
 
 # Node dependencies
-frontend/node_modules/
+node_modules/
 
 # Environment files (contains secrets)
 backend/.env

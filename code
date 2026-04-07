@@ -5,4 +5,9 @@ npm run dev
 backend
 cd backend
 .\venv\Scripts\activate
- uvicorn main:app --reload --port 8000
+uvicorn main:app --reload --port 8000
+
+git
+git add .
+git commit -m "Description of your changes"
+git push origin main

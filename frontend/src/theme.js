@@ -1,71 +1,89 @@
 // src/theme.js
 import { createTheme } from '@mui/material/styles';
-import { blue, grey } from '@mui/material/colors';
+import { blue, grey, green, red } from '@mui/material/colors';
 
 // Define a custom theme
 const theme = createTheme({
   palette: {
     primary: {
-      main: blue[700], // A slightly darker blue for primary elements
+      main: blue[700], // A strong blue for primary actions
     },
     secondary: {
-      main: grey[600], // Grey for secondary actions/text
+      main: grey[600],
     },
     background: {
-      default: grey[100], // Light grey background for the page
-      paper: '#ffffff',    // White background for cards/paper elements
+      default: blue[50], // Very light blue background, like your reference
+      paper: '#ffffff',    // White for all cards/paper
     },
+    success: {
+      main: green[600],
+      contrastText: '#fff',
+    },
+    error: {
+      main: red[600],
+      contrastText: '#fff',
+    },
+    info: {
+      main: blue[500],
+      contrastText: '#fff',
+    }
   },
   typography: {
     fontFamily: '"Roboto", "Helvetica", "Arial", sans-serif',
-    h4: {
-      fontWeight: 600,
-    },
-    h5: {
-      fontWeight: 600,
-    },
-    h6: {
-       fontWeight: 600,
-    }
+    h4: { fontWeight: 600, marginBottom: '1rem' },
+    h5: { fontWeight: 600, marginBottom: '0.8rem' },
+    h6: { fontWeight: 600, marginBottom: '0.5rem' },
+  },
+  shape: {
+    borderRadius: 12, // More rounded corners, like your reference
   },
   components: {
-    // Style overrides for specific components
     MuiAppBar: {
       styleOverrides: {
         root: {
-          backgroundColor: blue[800], // Darker blue for app bar
+          backgroundColor: '#ffffff', // White app bar
+          color: grey[800],         // Dark text
+          boxShadow: '0px 2px 4px -1px rgba(0,0,0,0.1)', // Subtle shadow
         },
       },
     },
-    MuiCard: {
+    MuiPaper: { // Style for all Paper components
       styleOverrides: {
         root: {
-          boxShadow: '0px 4px 12px rgba(0,0,0,0.05)', // Softer shadow
-          borderRadius: '12px', // Slightly more rounded corners
+          boxShadow: '0px 4px 12px rgba(0,0,0,0.08)', // Softer shadow
         },
       },
     },
+     MuiCard: { // Style for all Card components
+        styleOverrides: {
+           root: {
+             boxShadow: '0px 4px 12px rgba(0,0,0,0.08)',
+           }
+        }
+     },
      MuiButton: {
        styleOverrides: {
          root: {
-           borderRadius: '8px', // Match card rounding
-           textTransform: 'none', // Prevent ALL CAPS
+           textTransform: 'none',
            fontWeight: 600,
+           padding: '10px 20px',
          },
          containedPrimary: {
-           boxShadow: 'none',
+           boxShadow: '0px 3px 6px rgba(0,123,255,0.2)', // Subtle blue shadow for primary button
            '&:hover': {
              boxShadow: 'none',
+             backgroundColor: blue[800]
            },
          },
        },
      },
-     MuiPaper: {
+     MuiTableCell: {
         styleOverrides: {
-           root: {
-             borderRadius: '12px',
-             boxShadow: '0px 4px 12px rgba(0,0,0,0.05)',
-           }
+            head: {
+                fontWeight: 600,
+                backgroundColor: grey[100],
+                color: grey[700],
+            }
         }
      }
   },

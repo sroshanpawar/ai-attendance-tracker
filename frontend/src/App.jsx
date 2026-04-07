@@ -7,13 +7,14 @@ import { Dashboard } from './Dashboard';
 import { ManageStudents } from './ManageStudents';
 import { MarkAttendance } from './MarkAttendance';
 import { PastRecords } from './PastRecords';
-import { AppBar } from './AppBar'; // <-- Import AppBar
-import theme from './theme'; // <-- Import Theme
+import { SessionDetails } from './SessionDetails';
+import { AppBar } from './AppBar';
+import theme from './theme';
 
 // --- MUI Imports ---
-import { ThemeProvider } from '@mui/material/styles'; // <-- Import ThemeProvider
+import { ThemeProvider } from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
-import Container from '@mui/material/Container';
+// import Container from '@mui/material/Container'; // <-- REMOVED
 import CircularProgress from '@mui/material/CircularProgress';
 import Box from '@mui/material/Box';
 // --- End MUI Imports ---
@@ -38,7 +39,7 @@ function App() {
 
   if (loading) {
     return (
-      <ThemeProvider theme={theme}> {/* ThemeProvider needed even for loading */}
+      <ThemeProvider theme={theme}>
         <CssBaseline />
         <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh', bgcolor: 'background.default' }}>
           <CircularProgress />
@@ -48,21 +49,25 @@ function App() {
   }
 
   return (
-    <ThemeProvider theme={theme}> {/* Apply theme globally */}
+    <ThemeProvider theme={theme}>
       <CssBaseline />
       <BrowserRouter>
-        <AppBar /> {/* Display AppBar on all pages */}
-        <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}> {/* Main content area */}
-          <Routes>
-            {/* Routes remain the same */}
-            <Route path="/" element={!session ? <Navigate to="/login" /> : <Navigate to="/dashboard" />} />
-            <Route path="/login" element={!session ? <Auth /> : <Navigate to="/dashboard" />} />
-            <Route path="/dashboard" element={!session ? <Navigate to="/login" /> : <Dashboard />} />
-            <Route path="/manage-students" element={!session ? <Navigate to="/login" /> : <ManageStudents />} />
-            <Route path="/mark-attendance" element={!session ? <Navigate to="/login" /> : <MarkAttendance />} />
-            <Route path="/past-records" element={!session ? <Navigate to="/login" /> : <PastRecords />} />
-          </Routes>
-        </Container>
+        <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh', bgcolor: 'background.default' }}>
+          <AppBar />
+          {/* Main content area, now full width with padding */}
+          <Box component="main" sx={{ flexGrow: 1, p: 3 }}> 
+            <Routes>
+              {/* Routes remain the same */}
+              <Route path="/" element={!session ? <Navigate to="/login" /> : <Navigate to="/dashboard" />} />
+              <Route path="/login" element={!session ? <Auth /> : <Navigate to="/dashboard" />} />
+              <Route path="/dashboard" element={!session ? <Navigate to="/login" /> : <Dashboard />} />
+              <Route path="/manage-students" element={!session ? <Navigate to="/login" /> : <ManageStudents />} />
+              <Route path="/mark-attendance" element={!session ? <Navigate to="/login" /> : <MarkAttendance />} />
+              <Route path="/past-records" element={!session ? <Navigate to="/login" /> : <PastRecords />} />
+              <Route path="/session/:sessionId" element={!session ? <Navigate to="/login" /> : <SessionDetails />} />
+            </Routes>
+          </Box>
+        </Box>
       </BrowserRouter>
     </ThemeProvider>
   );

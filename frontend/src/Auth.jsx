@@ -5,12 +5,12 @@ import { supabase } from './supabaseClient';
 // --- MUI Imports ---
 import Button from '@mui/material/Button';
 import TextField from '@mui/material/TextField';
-import Card from '@mui/material/Card';
-import CardContent from '@mui/material/CardContent';
+import Paper from '@mui/material/Paper'; // Changed from Card
 import Typography from '@mui/material/Typography';
 import Box from '@mui/material/Box';
 import Alert from '@mui/material/Alert';
 import CircularProgress from '@mui/material/CircularProgress';
+import InsightsIcon from '@mui/icons-material/Insights'; // App Icon
 // --- End MUI Imports ---
 
 export function Auth() {
@@ -52,68 +52,72 @@ export function Auth() {
   };
 
   return (
-    <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '80vh' }}>
-      <Card sx={{ minWidth: 275, maxWidth: 400, width: '100%' }}>
-        <CardContent>
-          <Typography variant="h5" component="div" sx={{ mb: 2, textAlign: 'center' }}>
+    // Center the box on the page
+    <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', pt: 8 }}> 
+      <Paper elevation={3} sx={{ p: 4, maxWidth: 400, width: '100%' }}>
+        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', mb: 2 }}>
+          <InsightsIcon sx={{ color: 'primary.main', fontSize: 40, mb: 1 }} />
+          <Typography variant="h5" component="h1" gutterBottom>
             AI Attendance Login
           </Typography>
+        </Box>
 
-          {message && (
-            <Alert severity={isError ? "error" : "success"} sx={{ mb: 2 }}>
-              {message}
-            </Alert>
-          )}
+        {message && (
+          <Alert severity={isError ? "error" : "success"} sx={{ mb: 2 }}>
+            {message}
+          </Alert>
+        )}
 
-          <Box component="form" onSubmit={handleLogin} noValidate sx={{ mt: 1 }}>
-            <TextField
-              margin="normal"
-              required
+        <Box component="form" onSubmit={handleLogin} noValidate sx={{ mt: 1 }}>
+          <TextField
+            margin="normal"
+            required
+            fullWidth
+            id="email"
+            label="Email Address"
+            name="email"
+            autoComplete="email"
+            autoFocus
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            disabled={loading}
+          />
+          <TextField
+            margin="normal"
+            required
+            fullWidth
+            name="password"
+            label="Password"
+            type="password"
+            id="password"
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            disabled={loading}
+          />
+          <Box sx={{ mt: 3, mb: 1, position: 'relative' }}>
+            <Button
+              type="submit"
               fullWidth
-              id="email"
-              label="Email Address"
-              name="email"
-              autoComplete="email"
-              autoFocus
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              variant="contained"
               disabled={loading}
-            />
-            <TextField
-              margin="normal"
-              required
-              fullWidth
-              name="password"
-              label="Password"
-              type="password"
-              id="password"
-              autoComplete="current-password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              disabled={loading}
-            />
-            <Box sx={{ mt: 2, display: 'flex', gap: 1, justifyContent: 'center' }}>
-              <Button
-                type="submit"
-                variant="contained"
-                disabled={loading}
-                sx={{ position: 'relative' }}
-              >
-                Login
-                {loading && <CircularProgress size={24} sx={{ position: 'absolute' }} />}
-              </Button>
-              <Button
-                type="button"
-                variant="outlined"
-                onClick={handleSignUp}
-                disabled={loading}
-              >
-                Sign Up
-              </Button>
-            </Box>
+              size="large"
+            >
+              Login
+              {loading && <CircularProgress size={24} sx={{ position: 'absolute', top: '50%', left: '50%', mt: '-12px', ml: '-12px' }} />}
+            </Button>
           </Box>
-        </CardContent>
-      </Card>
+           <Button
+              type="button"
+              fullWidth
+              variant="outlined"
+              onClick={handleSignUp}
+              disabled={loading}
+            >
+              Sign Up
+            </Button>
+        </Box>
+      </Paper>
     </Box>
   );
 }

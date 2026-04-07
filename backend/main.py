@@ -8,6 +8,7 @@ import io
 import matplotlib
 matplotlib.use('Agg') # Use non-interactive backend for server
 import matplotlib.pyplot as plt
+from scipy.spatial import distance as dist # For EAR calculation
 from deepface import DeepFace
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends
@@ -32,6 +33,9 @@ supabase: Client = create_client(url, key)
 
 # Create FastAPI app
 app = FastAPI()
+
+# --- Constants ---
+EAR_THRESHOLD = 0.25 # Threshold for blink detection
 
 # --- In-Memory Session Storage ---
 active_sessions = {}
@@ -76,7 +80,6 @@ class BatchCreate(BaseModel):
     batch_name: str
     subject: str
 
-# NEW: Model for updating student's batch assignments
 class StudentBatchUpdate(BaseModel):
     batch_ids: List[int]
 
@@ -91,7 +94,7 @@ class FrameProcessRequest(BaseModel):
 class SessionEndRequest(BaseModel):
     session_id: str
 
-# --- Helper Function ---
+# --- Helper Functions ---
 
 def base64_to_image(base64_string):
     """Converts a base64 string to an OpenCV image."""
@@ -102,6 +105,16 @@ def base64_to_image(base64_string):
     img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
     return img
 
+def calculate_ear(eye):
+    # compute the euclidean distances between vertical landmarks
+    A = dist.euclidean(eye[1], eye[5])
+    B = dist.euclidean(eye[2], eye[4])
+    # compute the euclidean distance between horizontal landmarks
+    C = dist.euclidean(eye[0], eye[3])
+    # compute the eye aspect ratio
+    ear = (A + B) / (2.0 * C)
+    return ear
+
 # --- API Endpoints ---
 
 @app.get("/")
@@ -109,467 +122,260 @@ def read_root():
     return {"message": "AI Attendance Tracker backend is running!"}
 
 
+# --- Student Management ---
 @app.post("/student")
 def register_student(student: StudentRegistration, user: dict = Depends(get_current_user)):
     try:
-        if not student.image_base64:
-            raise HTTPException(status_code=400, detail="No image provided.")
-
+        if not student.image_base64: raise HTTPException(status_code=400, detail="No image provided.")
         img = base64_to_image(student.image_base64)
         rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         face_locations = face_recognition.face_locations(rgb_img)
+        if not face_locations: raise HTTPException(status_code=400, detail="No face detected.")
 
-        if not face_locations:
-            raise HTTPException(status_code=400, detail="No face detected in the image.")
+        # Ensure landmarks are detected before encoding - reduces errors later
+        landmarks = face_recognition.face_landmarks(rgb_img, face_locations)
+        if not landmarks or not landmarks[0].get('left_eye') or not landmarks[0].get('right_eye'):
+             raise HTTPException(status_code=400, detail="Could not detect facial features needed for liveness check. Try a clearer picture.")
 
         encoding = face_recognition.face_encodings(rgb_img, face_locations)[0]
         encoding_list = encoding.tolist()
-
-        student_response = supabase.table('students').insert({
-            "name": student.name,
-            "face_encodings": encoding_list,
-            "user_id": user.id
-        }).execute()
-
-        if not student_response.data:
-             raise HTTPException(status_code=500, detail="Failed to save student to database.")
-
+        student_response = supabase.table('students').insert({ "name": student.name, "face_encodings": encoding_list, "user_id": user.id }).execute()
+        if not student_response.data: raise HTTPException(status_code=500, detail="Failed to save student.")
         new_student_id = student_response.data[0]['id']
-
         if student.batch_ids:
-            records_to_insert = []
-            for batch_id in student.batch_ids:
-                records_to_insert.append({
-                    "batch_id": batch_id,
-                    "student_id": new_student_id
-                })
+            records = [{"batch_id": b_id, "student_id": new_student_id} for b_id in student.batch_ids]
+            supabase.table('batch_students').insert(records).execute()
+        return { "message": "Student registered successfully!", "data": student_response.data }
+    except HTTPException as http_ex: raise http_ex
+    except Exception as e: print(f"Reg err: {e}"); raise HTTPException(status_code=500, detail=f"Internal error during registration: {str(e)}")
 
-            supabase.table('batch_students').insert(records_to_insert).execute()
-
-        return {
-            "message": "Student registered successfully!",
-            "data": student_response.data
-        }
-
-    except HTTPException as http_ex:
-        raise http_ex
-    except Exception as e:
-        print(f"An error occurred: {e}")
-        raise HTTPException(status_code=500, detail=f"An internal server error occurred: {str(e)}")
-
-# 🚀 NEW: Get all students for the user, including their assigned batches
 @app.get("/students")
 async def get_students(user: dict = Depends(get_current_user)):
     try:
-        # Fetch students and join with batch_students, then batches to get batch names
-        response = supabase.table("students") \
-            .select("id, name, created_at, batch_students(batches(id, batch_name))") \
-            .eq("user_id", user.id) \
-            .order("created_at", desc=True) \
-            .execute()
-        
-        # Reformat the data slightly for easier frontend use
+        response = supabase.table("students").select("id, name, created_at, batch_students(batches(id, batch_name))").eq("user_id", user.id).order("created_at", desc=True).execute()
         students_data = []
         for student in response.data:
-            assigned_batches = []
-            if student.get("batch_students"):
-                for link in student["batch_students"]:
-                    if link.get("batches"): # Check if batch exists (wasn't deleted)
-                        assigned_batches.append(link["batches"]) # {id: ..., batch_name: ...}
-            
-            students_data.append({
-                "id": student["id"],
-                "name": student["name"],
-                "created_at": student["created_at"],
-                "batches": assigned_batches # List of {id, batch_name}
-            })
-            
+            assigned_batches = [link["batches"] for link in student.get("batch_students", []) if link.get("batches")]
+            students_data.append({ "id": student["id"], "name": student["name"], "created_at": student["created_at"], "batches": assigned_batches })
         return students_data
-    except Exception as e:
-        print(f"Error getting students: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e: print(f"Get students err: {e}"); raise HTTPException(status_code=500, detail=f"Failed to get students: {str(e)}")
 
-# 🚀 NEW: Update a student's batch assignments
 @app.put("/student/{student_id}/batches")
 async def update_student_batches(student_id: int, update_data: StudentBatchUpdate, user: dict = Depends(get_current_user)):
     try:
-        # 1. Verify student exists and belongs to the user
         student_check = supabase.table("students").select("id").eq("id", student_id).eq("user_id", user.id).maybe_single().execute()
-        if not student_check.data:
-            raise HTTPException(status_code=404, detail="Student not found or you don't own it.")
-
-        # 2. Delete existing assignments for this student
+        if not student_check.data: raise HTTPException(status_code=404, detail="Student not found or permission denied.")
         supabase.table("batch_students").delete().eq("student_id", student_id).execute()
-
-        # 3. Insert new assignments
         if update_data.batch_ids:
-            records_to_insert = [{"batch_id": b_id, "student_id": student_id} for b_id in update_data.batch_ids]
-            supabase.table("batch_students").insert(records_to_insert).execute()
-            
-        return {"message": "Student batch assignments updated successfully."}
-        
-    except Exception as e:
-        print(f"Error updating student batches: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+            records = [{"batch_id": b_id, "student_id": student_id} for b_id in update_data.batch_ids]
+            supabase.table("batch_students").insert(records).execute()
+        return {"message": "Student batch assignments updated."}
+    except Exception as e: print(f"Update student err: {e}"); raise HTTPException(status_code=500, detail=f"Failed to update batches: {str(e)}")
 
-# 🚀 NEW: Delete a student
 @app.delete("/student/{student_id}")
 async def delete_student(student_id: int, user: dict = Depends(get_current_user)):
     try:
-        # Delete the student record. Due to "ON DELETE CASCADE",
-        # related records in batch_students and attendance_records should also be deleted.
-        response = supabase.table("students").delete().eq("id", student_id).eq("user_id", user.id).execute()
-        
-        # Check if any row was actually deleted
-        # Note: Supabase delete response might not clearly indicate rows affected,
-        # so we rely on the query executing without error and the RLS policy.
-        # A more robust check might involve selecting first.
-        
-        # Assuming RLS prevents unauthorized deletion, success means it was likely deleted or didn't exist for this user.
-        return {"message": "Student deleted successfully (or did not exist for this user)."}
+        # Verify ownership before delete for extra safety, though RLS should handle it
+        student_check = supabase.table("students").select("id").eq("id", student_id).eq("user_id", user.id).maybe_single().execute()
+        if not student_check.data:
+             # Don't raise error, just inform user it might not exist for them
+             return {"message": "Student not found for this user."}
 
-    except Exception as e:
-        print(f"Error deleting student: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        supabase.table("students").delete().eq("id", student_id).eq("user_id", user.id).execute()
+        return {"message": "Student deleted successfully."}
+    except Exception as e: print(f"Delete student err: {e}"); raise HTTPException(status_code=500, detail=f"Failed to delete student: {str(e)}")
 
-
+# --- Batch Management ---
 @app.get("/batches")
 async def get_batches(user: dict = Depends(get_current_user)):
     try:
         response = supabase.table("batches").select("*").eq("user_id", user.id).order("created_at", desc=True).execute()
         return response.data
-    except Exception as e:
-        print(f"Error getting batches: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e: print(f"Get batches err: {e}"); raise HTTPException(status_code=500, detail=f"Failed to get batches: {str(e)}")
 
 @app.post("/batch")
 async def create_batch(batch: BatchCreate, user: dict = Depends(get_current_user)):
     try:
-        response = supabase.table("batches").insert({
-            "batch_name": batch.batch_name,
-            "subject": batch.subject,
-            "user_id": user.id
-        }).execute()
+        response = supabase.table("batches").insert({ "batch_name": batch.batch_name, "subject": batch.subject, "user_id": user.id }).execute()
+        if not response.data: raise HTTPException(status_code=500, detail="Could not create batch.")
+        return {"message": "Batch created.", "data": response.data[0]}
+    except Exception as e: print(f"Create batch err: {e}"); raise HTTPException(status_code=500, detail=f"Failed to create batch: {str(e)}")
 
-        if not response.data:
-            raise HTTPException(status_code=500, detail="Could not create batch.")
-
-        return {"message": "Batch created successfully", "data": response.data[0]}
-    except Exception as e:
-        print(f"Error creating batch: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# 🚀 NEW: Delete a batch
 @app.delete("/batch/{batch_id}")
 async def delete_batch(batch_id: int, user: dict = Depends(get_current_user)):
     try:
-        # Delete the batch record. "ON DELETE CASCADE" should handle related batch_students.
-        # We also added "ON DELETE SET NULL" for sessions.batch_id.
-        response = supabase.table("batches").delete().eq("id", batch_id).eq("user_id", user.id).execute()
+         # Verify ownership before delete
+        batch_check = supabase.table("batches").select("id").eq("id", batch_id).eq("user_id", user.id).maybe_single().execute()
+        if not batch_check.data:
+             return {"message": "Batch not found for this user."}
 
-        return {"message": "Batch deleted successfully (or did not exist for this user)."}
+        supabase.table("batches").delete().eq("id", batch_id).eq("user_id", user.id).execute()
+        return {"message": "Batch deleted."}
+    except Exception as e: print(f"Delete batch err: {e}"); raise HTTPException(status_code=500, detail=f"Failed to delete batch: {str(e)}")
 
-    except Exception as e:
-        print(f"Error deleting batch: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
+# --- Attendance Session ---
 @app.post("/session/start")
 async def start_session(req: SessionStartRequest, user: dict = Depends(get_current_user)):
     try:
-        # 1. Verify batch exists and user owns it
         batch_res = supabase.table("batches").select("id, batch_name, subject").eq("id", req.batch_id).eq("user_id", user.id).single().execute()
-        if not batch_res.data:
-            raise HTTPException(status_code=404, detail="Batch not found or you don't own it.")
+        if not batch_res.data: raise HTTPException(status_code=404, detail="Batch not found or permission denied.")
         batch_info = batch_res.data
-
-        # 2. Fetch ONLY students linked to this batch_id via batch_students
-        student_res = supabase.table("students") \
-            .select("id, name, face_encodings, batch_students!inner(batch_id)") \
-            .eq("batch_students.batch_id", req.batch_id) \
-            .execute()
-
-        if not student_res.data:
-            raise HTTPException(status_code=404, detail="No students found in this batch.")
-
-        known_faces = {}
-        attendance_tracker = {}
-        emotion_tracker = {}
-        all_student_ids_in_batch = []
-
+        student_res = supabase.table("students").select("id, name, face_encodings, batch_students!inner(batch_id)").eq("batch_students.batch_id", req.batch_id).execute()
+        if not student_res.data: raise HTTPException(status_code=404, detail="No students found in this batch.")
+        known_faces, attendance_tracker, emotion_tracker, blink_tracker, all_student_ids = {}, {}, {}, {}, []
         for student in student_res.data:
-            student_id = student['id'] # INT
-            all_student_ids_in_batch.append(student_id)
-
-            if student.get("face_encodings"):
-                known_faces[student_id] = np.array(student['face_encodings'])
-
-            attendance_tracker[student_id] = 0
-            emotion_tracker[student_id] = {}
-
-        if not known_faces:
-             raise HTTPException(status_code=404, detail="None of the students in this batch have face data registered.")
-
-        # 3. Create the session
-        session_id = str(uuid.uuid4()) # In-memory session ID
-        duration_seconds = req.duration_minutes * 60
-
-        now = datetime.now()
-        current_date = now.strftime("%Y-%m-%d")
-        current_time = now.strftime("%H:%M:%S")
-
-        db_session_response = supabase.table("sessions").insert({
-            "class_name": batch_info['batch_name'],
-            "batch": batch_info['subject'],
-            "duration_minutes": req.duration_minutes,
-            "user_id": user.id,
-            "session_date": current_date,
-            "session_time": current_time,
-            "batch_id": req.batch_id
-        }).execute()
-
-        if not db_session_response.data:
-            raise HTTPException(status_code=500, detail="Could not create database session entry.")
-
-        db_session_id = db_session_response.data[0]['id']
-
-        threshold_seconds = duration_seconds * 0.7
-
-        # 4. Store session data in memory
-        active_sessions[session_id] = {
-            "db_session_id": db_session_id,
-            "batch_id": req.batch_id,
-            "known_faces": known_faces,
-            "all_student_ids": all_student_ids_in_batch,
-            "attendance_tracker": attendance_tracker,
-            "emotion_tracker": emotion_tracker,
-            "last_frame_time": datetime.now(),
-            "settings": {
-                "duration_seconds": duration_seconds,
-                "threshold_seconds": threshold_seconds
-            }
-        }
-
+            s_id = student['id']; all_student_ids.append(s_id)
+            if student.get("face_encodings"): known_faces[s_id] = np.array(student['face_encodings'])
+            attendance_tracker[s_id], emotion_tracker[s_id], blink_tracker[s_id] = 0, {}, False
+        if not known_faces: raise HTTPException(status_code=404, detail="None of the students in this batch have face data registered.")
+        session_id, duration_s = str(uuid.uuid4()), req.duration_minutes * 60
+        now = datetime.now(); date, time = now.strftime("%Y-%m-%d"), now.strftime("%H:%M:%S")
+        db_res = supabase.table("sessions").insert({ "class_name": batch_info['batch_name'], "batch": batch_info['subject'], "duration_minutes": req.duration_minutes, "user_id": user.id, "session_date": date, "session_time": time, "batch_id": req.batch_id }).execute()
+        if not db_res.data: raise HTTPException(status_code=500, detail="Could not create database session entry.")
+        db_id = db_res.data[0]['id']
+        threshold_s = duration_s * 0.7
+        active_sessions[session_id] = { "db_session_id": db_id, "batch_id": req.batch_id, "known_faces": known_faces, "all_student_ids": all_student_ids, "attendance_tracker": attendance_tracker, "emotion_tracker": emotion_tracker, "blink_tracker": blink_tracker, "last_frame_time": now, "settings": { "duration_seconds": duration_s, "threshold_seconds": threshold_s } }
         return {"message": "Session started", "session_id": session_id}
-
-    except Exception as e:
-        print(f"Error starting session: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
+    except Exception as e: print(f"Start session err: {e}"); raise HTTPException(status_code=500, detail=f"Failed to start session: {str(e)}")
 
 @app.post("/session/frame")
 async def process_frame(req: FrameProcessRequest, user: dict = Depends(get_current_user)):
     try:
         session_id = req.session_id
-        if session_id not in active_sessions:
-            print("Frame received for an already ended session. Ignoring.")
-            return {"message": "Session ended, frame ignored."}
-
-        session_data = active_sessions[session_id]
-
-        now = datetime.now()
-        time_since_last_frame = (now - session_data["last_frame_time"]).total_seconds()
-        session_data["last_frame_time"] = now
-
-        known_face_encodings = list(session_data["known_faces"].values())
-        known_face_ids = list(session_data["known_faces"].keys()) # List of INTS
-
-        img = base64_to_image(req.image_base64)
-        rgb_small_frame = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
-        face_locations = face_recognition.face_locations(rgb_small_frame)
-        face_encodings = face_recognition.face_encodings(rgb_small_frame, face_locations)
-
-        found_student_ids = []
-
-        for face_encoding, face_location in zip(face_encodings, face_locations):
-            matches = face_recognition.compare_faces(known_face_encodings, face_encoding, tolerance=0.6)
-            face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
-
-            best_match_index = np.argmin(face_distances)
-            if matches[best_match_index]:
-                student_id = known_face_ids[best_match_index] # INT
-                found_student_ids.append(student_id)
-
-                top, right, bottom, left = face_location
-                face_image = rgb_small_frame[top:bottom, left:right]
-
+        if session_id not in active_sessions: return {"message": "Session ended, frame ignored."}
+        s_data = active_sessions[session_id]; now = datetime.now()
+        elapsed = (now - s_data["last_frame_time"]).total_seconds(); s_data["last_frame_time"] = now
+        encodings, ids = list(s_data["known_faces"].values()), list(s_data["known_faces"].keys())
+        img = base64_to_image(req.image_base64); rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        locs = face_recognition.face_locations(rgb_img); f_encs = face_recognition.face_encodings(rgb_img, locs); f_marks = face_recognition.face_landmarks(rgb_img, locs)
+        found_ids = []
+        for i, f_enc in enumerate(f_encs):
+            loc, marks = locs[i], f_marks[i]
+            # Skip if landmarks (needed for EAR) are missing for this face
+            if not marks or not marks.get('left_eye') or not marks.get('right_eye'):
+                continue
+            matches = face_recognition.compare_faces(encodings, f_enc, tolerance=0.6)
+            dists = face_recognition.face_distance(encodings, f_enc); best_idx = np.argmin(dists)
+            if matches[best_idx]:
+                s_id = ids[best_idx]; found_ids.append(s_id)
+                leftE = marks['left_eye']; rightE = marks['right_eye']
+                leftEAR, rightEAR = calculate_ear(leftE), calculate_ear(rightE)
+                ear = (leftEAR + rightEAR) / 2.0
+                if ear < EAR_THRESHOLD: s_data["blink_tracker"][s_id] = True; print(f"Blink detected: {s_id}")
+                top, right, bottom, left = loc; face_img = rgb_img[top:bottom, left:right]
                 try:
-                    analysis = DeepFace.analyze(
-                        cv2.cvtColor(face_image, cv2.COLOR_RGB2BGR),
-                        actions=['emotion'],
-                        enforce_detection=False
-                    )
+                    analysis = DeepFace.analyze(cv2.cvtColor(face_img, cv2.COLOR_RGB2BGR), actions=['emotion'], enforce_detection=False)
                     emotion = analysis[0]['dominant_emotion']
-                    if student_id in session_data["emotion_tracker"]:
-                        student_emotion_tracker = session_data["emotion_tracker"][student_id]
-                        student_emotion_tracker[emotion] = student_emotion_tracker.get(emotion, 0) + 1
-                except Exception as e:
-                    emotion = "unknown"
-
-        for student_id in found_student_ids:
-             if student_id in session_data["attendance_tracker"]:
-                session_data["attendance_tracker"][student_id] += time_since_last_frame
-
-        return {"message": "Frame processed", "found_students": found_student_ids, "time_credited": time_since_last_frame}
-
-    except Exception as e:
-        print(f"Error processing frame: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
+                    if s_id in s_data["emotion_tracker"]: s_data["emotion_tracker"][s_id][emotion] = s_data["emotion_tracker"][s_id].get(emotion, 0) + 1
+                except Exception: pass
+        for s_id in found_ids:
+             if s_id in s_data["attendance_tracker"]: s_data["attendance_tracker"][s_id] += elapsed
+        return {"message": "Frame processed", "found_students": found_ids, "time_credited": elapsed}
+    except Exception as e: print(f"Frame err: {e}"); raise HTTPException(status_code=500, detail=f"Error processing frame: {str(e)}")
 
 @app.post("/session/end")
 async def end_session(req: SessionEndRequest, user: dict = Depends(get_current_user)):
     try:
         session_id = req.session_id
-        if session_id not in active_sessions:
-            raise HTTPException(status_code=404, detail="Session not found.")
+        if session_id not in active_sessions: raise HTTPException(status_code=404, detail="Session not found.")
+        s_data = active_sessions.pop(session_id)
+        db_id, threshold = s_data["db_session_id"], s_data["settings"]["threshold_seconds"]
+        times, emotions, blinks, all_ids = s_data["attendance_tracker"], s_data["emotion_tracker"], s_data["blink_tracker"], s_data["all_student_ids"]
+        records = []
+        for s_id in all_ids:
+            time_p = times.get(s_id, 0); status = "Present" if time_p >= threshold else "Absent"
+            live = blinks.get(s_id, False)
+            records.append({ "session_id": db_id, "student_id": s_id, "status": status, "attentive_seconds": round(time_p), "emotion_summary": emotions.get(s_id, {}), "liveness_verified": live })
+        if records: supabase.table("attendance_records").insert(records).execute()
+        return {"message": "Session ended and attendance recorded."}
+    except Exception as e: print(f"End session err: {e}"); raise HTTPException(status_code=500, detail=f"Failed to end session: {str(e)}")
 
-        session_data = active_sessions.pop(session_id)
-        db_session_id = session_data["db_session_id"]
-        threshold = session_data["settings"]["threshold_seconds"]
-        final_attendance_times = session_data["attendance_tracker"]
-        final_emotions = session_data["emotion_tracker"]
-        all_student_ids_in_batch = session_data["all_student_ids"]
-
-        records_to_insert = []
-
-        for student_id in all_student_ids_in_batch:
-            time_present = final_attendance_times.get(student_id, 0)
-            status = "Present" if time_present >= threshold else "Absent"
-
-            records_to_insert.append({
-                "session_id": db_session_id,
-                "student_id": student_id, # INT
-                "status": status,
-                "attentive_seconds": round(time_present),
-                "emotion_summary": final_emotions.get(student_id, {})
-            })
-
-        if records_to_insert:
-            supabase.table("attendance_records").insert(records_to_insert).execute()
-
-        return {"message": "Session ended and attendance recorded for all students."}
-
-    except Exception as e:
-        print(f"Error ending session: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
+# --- Reporting & Session Details ---
 @app.get("/sessions")
 async def get_sessions(user: dict = Depends(get_current_user)):
     try:
         response = supabase.table("sessions").select("*").eq("user_id", user.id).order("created_at", desc=True).execute()
         return response.data
+    except Exception as e: print(f"Get sessions err: {e}"); raise HTTPException(status_code=500, detail=f"Failed to get sessions: {str(e)}")
+
+# --- NEW Endpoint ---
+@app.get("/session/{session_id}")
+async def get_session_details(session_id: int, user: dict = Depends(get_current_user)):
+    try:
+        response = supabase.table("sessions").select("*").eq("id", session_id).eq("user_id", user.id).maybe_single().execute()
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Session not found or permission denied.")
+        return response.data
     except Exception as e:
-        print(f"Error getting sessions: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Error getting session details: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get session details: {str(e)}")
+
+# --- NEW Endpoint ---
+@app.get("/session/{session_id}/attendance")
+async def get_session_attendance(session_id: int, user: dict = Depends(get_current_user)):
+    try:
+        session_check = supabase.table("sessions").select("id").eq("id", session_id).eq("user_id", user.id).maybe_single().execute()
+        if not session_check.data:
+            raise HTTPException(status_code=404, detail="Session not found or permission denied.")
+        response = supabase.table("attendance_records").select(
+            "status, attentive_seconds, liveness_verified, emotion_summary, students(id, name)"
+        ).eq("session_id", session_id).execute()
+        attendance_list = []
+        for record in response.data:
+            student_info = record.get('students')
+            attendance_list.append({
+                "student_id": student_info.get('id') if student_info else None,
+                "student_name": student_info.get('name') if student_info else "Unknown Student",
+                "status": record.get('status'),
+                "attentive_seconds": record.get('attentive_seconds'),
+                "liveness_verified": record.get('liveness_verified'),
+                "emotion_summary": record.get('emotion_summary')
+            })
+        return attendance_list
+    except Exception as e:
+        print(f"Error getting session attendance: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get session attendance: {str(e)}")
 
 
 @app.get("/report/{session_id}")
 async def get_report(session_id: int, user: dict = Depends(get_current_user)):
     try:
-        # 1. Verify user owns this session and get details
         session_res = supabase.table("sessions").select("*").eq("id", session_id).eq("user_id", user.id).single().execute()
-        if not session_res.data:
-            raise HTTPException(status_code=404, detail="Session not found or you do not have permission.")
-        session_data = session_res.data
-
-        # 2. Get Attendance Data
-        att_res = supabase.table("attendance_records").select(
-            "status, attentive_seconds, students(name), emotion_summary"
-        ).eq("session_id", session_id).execute()
-        attendance_data = att_res.data
-
-        # 3. Aggregate all emotion summaries
-        all_emotion_counts = {}
-        if attendance_data:
-            for record in attendance_data:
-                if record.get('emotion_summary'):
-                    for emotion, count in record['emotion_summary'].items():
-                        all_emotion_counts[emotion] = all_emotion_counts.get(emotion, 0) + count
-
-        # 4. Generate Emotion Pie Chart
-        img_buffer = None
-        if all_emotion_counts:
-            labels = list(all_emotion_counts.keys())
-            sizes = list(all_emotion_counts.values())
-
-            plt.figure(figsize=(8, 6))
-            plt.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=140, pctdistance=0.85)
-            plt.title("Overall Class Emotional Engagement", pad=20)
-            plt.axis('equal')
-
-            img_buffer = io.BytesIO()
-            plt.savefig(img_buffer, format='png', bbox_inches='tight')
-            plt.close()
-            img_buffer.seek(0)
-
-        # 5. Generate PDF
-        pdf = FPDF()
-        pdf.add_page()
-        pdf.set_font("Arial", 'B', 18)
-
-        class_name = session_data.get('class_name') or 'N/A'
-        batch = str(session_data.get('batch') or 'N/A')
-        date = str(session_data.get('session_date') or 'N/A')
-        time = str(session_data.get('session_time') or 'N/A')
-
-        pdf.cell(0, 10, "Attendance Report", 0, 1, 'C')
-        pdf.set_font("Arial", '', 12)
-
-        pdf.cell(0, 8, f"Class: {class_name} ({batch})", 0, 1, 'C')
-        pdf.cell(0, 8, f"Date: {date} at {time}", 0, 1, 'C')
-        pdf.ln(10)
-
-        pdf.set_font("Arial", 'B', 12)
-        pdf.set_fill_color(240, 240, 240)
-        pdf.cell(90, 10, "Student Name", 1, 0, 'C', fill=True)
-        pdf.cell(45, 10, "Status", 1, 0, 'C', fill=True)
-        pdf.cell(45, 10, "Time (sec)", 1, 1, 'C', fill=True)
-
-        pdf.set_font("Arial", '', 12)
-
-        if attendance_data:
-            for record in attendance_data:
-                student_record = record.get('students')
-                student_name = 'Unknown Student' # Default
-
-                if student_record and student_record.get('name'):
-                    try:
-                        student_name = student_record['name'].encode('latin-1', 'replace').decode('latin-1')
-                    except Exception:
-                        student_name = 'Name contains special characters'
-
-                status = record.get('status') or 'N/A'
-                seconds = str(record.get('attentive_seconds', 'N/A'))
-
-                pdf.cell(90, 10, student_name, 1, 0)
-                pdf.cell(45, 10, status, 1, 0, 'C')
-                pdf.cell(45, 10, seconds, 1, 1, 'C')
-
-        if img_buffer:
-            pdf.add_page()
-            pdf.set_font("Arial", 'B', 18)
-            pdf.cell(0, 10, "Emotional Engagement Summary", 0, 1, 'C')
-            pdf.ln(10)
-            img_w = 160
-            pdf.image(img_buffer, x=(pdf.w - img_w) / 2, y=None, w=img_w, type='png')
-        else:
-            pdf.add_page()
-            pdf.set_font("Arial", 'I', 12)
-            pdf.cell(0, 10, "No emotion data was recorded for this session.", 0, 1, 'C')
-
-        pdf_buffer = io.BytesIO()
-        pdf.output(pdf_buffer)
-        pdf_buffer.seek(0)
-
-        return StreamingResponse(pdf_buffer, media_type="application/pdf", headers={
-            "Content-Disposition": f"attachment; filename=report_session_{session_id}.pdf"
-        })
-
-    except Exception as e:
-        print(f"--- PDF GENERATION CRASHED ---")
-        print(f"Error: {e}")
-        print(f"--- END OF CRASH REPORT ---")
-        raise HTTPException(status_code=500, detail=f"Error generating report: {str(e)}")
+        if not session_res.data: raise HTTPException(status_code=404, detail="Session not found.")
+        s_data = session_res.data
+        att_res = supabase.table("attendance_records").select("status, attentive_seconds, liveness_verified, students(name), emotion_summary").eq("session_id", session_id).execute()
+        att_data = att_res.data
+        emo_counts = {}
+        if att_data:
+            for rec in att_data:
+                if rec.get('emotion_summary'):
+                    for emo, count in rec['emotion_summary'].items(): emo_counts[emo] = emo_counts.get(emo, 0) + count
+        img_buf = None
+        if emo_counts:
+            labels, sizes = list(emo_counts.keys()), list(emo_counts.values())
+            plt.figure(figsize=(8, 6)); plt.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=140, pctdistance=0.85)
+            plt.title("Overall Class Emotional Engagement", pad=20); plt.axis('equal')
+            img_buf = io.BytesIO(); plt.savefig(img_buf, format='png', bbox_inches='tight'); plt.close(); img_buf.seek(0)
+        pdf = FPDF(); pdf.add_page(); pdf.set_font("Arial", 'B', 18)
+        c_name, batch, date, time = s_data.get('class_name', 'N/A'), str(s_data.get('batch', 'N/A')), str(s_data.get('session_date', 'N/A')), str(s_data.get('session_time', 'N/A'))
+        pdf.cell(0, 10, "Attendance Report", 0, 1, 'C'); pdf.set_font("Arial", '', 12)
+        pdf.cell(0, 8, f"Class: {c_name} ({batch})", 0, 1, 'C'); pdf.cell(0, 8, f"Date: {date} at {time}", 0, 1, 'C'); pdf.ln(10)
+        pdf.set_font("Arial", 'B', 10); pdf.set_fill_color(240, 240, 240)
+        pdf.cell(80, 10, "Student Name", 1, 0, 'C', fill=True); pdf.cell(30, 10, "Status", 1, 0, 'C', fill=True)
+        pdf.cell(30, 10, "Time (sec)", 1, 0, 'C', fill=True); pdf.cell(40, 10, "Liveness", 1, 1, 'C', fill=True)
+        pdf.set_font("Arial", '', 10)
+        if att_data:
+            for rec in att_data:
+                s_rec, s_name = rec.get('students'), 'Unknown'
+                if s_rec and s_rec.get('name'):
+                    try: s_name = s_rec['name'].encode('latin-1', 'replace').decode('latin-1')
+                    except Exception: s_name = 'Special Chars'
+                status, secs, live = rec.get('status', 'N/A'), str(rec.get('attentive_seconds', 'N/A')), "Verified" if rec.get('liveness_verified') else "Not Verified"
+                pdf.cell(80, 10, s_name, 1, 0); pdf.cell(30, 10, status, 1, 0, 'C'); pdf.cell(30, 10, secs, 1, 0, 'C'); pdf.cell(40, 10, live, 1, 1, 'C')
+        if img_buf:
+            pdf.add_page(); pdf.set_font("Arial", 'B', 18); pdf.cell(0, 10, "Emotional Engagement Summary", 0, 1, 'C'); pdf.ln(10)
+            img_w = 160; pdf.image(img_buf, x=(pdf.w - img_w) / 2, y=None, w=img_w, type='png')
+        else: pdf.add_page(); pdf.set_font("Arial", 'I', 12); pdf.cell(0, 10, "No emotion data.", 0, 1, 'C')
+        pdf_buf = io.BytesIO(); pdf.output(pdf_buf); pdf_buf.seek(0)
+        return StreamingResponse(pdf_buf, media_type="application/pdf", headers={ "Content-Disposition": f"attachment; filename=report_session_{session_id}.pdf" })
+    except Exception as e: print(f"PDF err: {e}"); raise HTTPException(status_code=500, detail=f"PDF generation error: {str(e)}")
