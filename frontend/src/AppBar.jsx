@@ -1,57 +1,117 @@
-// src/AppBar.jsx
+// src/AppBar.jsx — Sticky Top Header (enterprise academic style)
 import React from 'react';
-import { useNavigate } from 'react-router-dom';
 import { supabase } from './supabaseClient';
-import MuiAppBar from '@mui/material/AppBar';
-import Toolbar from '@mui/material/Toolbar';
+
+import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
-import Button from '@mui/material/Button';
-import InsightsIcon from '@mui/icons-material/Insights'; // Icon similar to reference
+import Avatar from '@mui/material/Avatar';
 
-export function AppBar() {
-  const navigate = useNavigate();
-  const [session, setSession] = React.useState(null);
+// Named export used in App.jsx as <TopBar />
+export function TopBar() {
+  const [userEmail, setUserEmail] = React.useState('');
 
-  // Check session on mount to show/hide sign out button
   React.useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
+      setUserEmail(session?.user?.email || '');
     });
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
+      setUserEmail(session?.user?.email || '');
     });
     return () => subscription.unsubscribe();
   }, []);
 
-  const handleSignOut = async () => {
-    await supabase.auth.signOut();
-    navigate('/login');
-  };
+  const initials = userEmail
+    ? userEmail.split('@')[0].slice(0, 2).toUpperCase()
+    : '??';
+
+  const hour = new Date().getHours();
+  const greeting =
+    hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+  const firstName = userEmail ? userEmail.split('@')[0] : '';
 
   return (
-    // Use position="sticky" to keep it at the top when scrolling
-    <MuiAppBar position="sticky" elevation={0}> 
-      <Toolbar>
-        <InsightsIcon sx={{ mr: 1.5, color: 'primary.main', fontSize: 28 }} />
-        <Typography 
-          variant="h6" 
-          component="div" 
-          sx={{ flexGrow: 1, cursor: 'pointer', fontWeight: 700 }} 
-          onClick={() => navigate('/')}
+    <Box
+      component="header"
+      sx={{
+        // STICKY — lives in the normal flow, never overlays content
+        position: 'sticky',
+        top: 0,
+        zIndex: 50,
+        bgcolor: '#ffffff',
+        borderBottom: '1px solid #e2e8f0',
+        boxShadow: '0 1px 4px rgba(0,0,0,0.07)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        px: { xs: 2.5, md: 4 },
+        height: 64,
+        flexShrink: 0,
+      }}
+    >
+      {/* LEFT — Greeting */}
+      <Box>
+        <Typography
+          sx={{
+            fontSize: '1.05rem',
+            fontWeight: 700,
+            color: '#0f172a',
+            lineHeight: 1.2,
+          }}
         >
-          AI Attendance Tracker
+          {greeting}{firstName ? `, ${firstName}` : ''}! 👋
         </Typography>
-        {session && (
-          <Button 
-            variant="outlined" 
-            color="secondary" 
-            onClick={handleSignOut}
-            sx={{ textTransform: 'none', fontWeight: 600 }}
+        <Typography sx={{ fontSize: '0.75rem', color: '#94a3b8', mt: 0.15 }}>
+          AI Attendance Tracker &mdash; Instructor Portal
+        </Typography>
+      </Box>
+
+      {/* RIGHT — User profile + Sign Out */}
+      {userEmail && (
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+          {/* User pill */}
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 1.25,
+              px: 1.5,
+              py: 0.5,
+              border: '1px solid #e2e8f0',
+              borderRadius: '99px',
+              bgcolor: '#f8fafc',
+            }}
           >
-            Sign Out
-          </Button>
-        )}
-      </Toolbar>
-    </MuiAppBar>
+            <Avatar
+              sx={{
+                width: 28,
+                height: 28,
+                fontSize: '0.7rem',
+                fontWeight: 700,
+                bgcolor: '#2563eb',
+              }}
+            >
+              {initials}
+            </Avatar>
+            <Typography
+              sx={{
+                fontSize: '0.8rem',
+                fontWeight: 600,
+                color: '#1e293b',
+                maxWidth: 180,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {userEmail}
+            </Typography>
+          </Box>
+
+        </Box>
+      )}
+    </Box>
   );
 }
+
+// Legacy default export for any direct import
+export function AppBar() { return <TopBar />; }
