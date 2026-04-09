@@ -1,77 +1,21 @@
-// src/App.jsx
 import React, { useState, useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
-import { supabase } from './supabaseClient';
-import { Auth } from './Auth';
-import { Dashboard } from './Dashboard';
-import { ManageHub } from './ManageHub';
-import { ManageBatches } from './ManageBatches';
-import { EnrollStudent } from './EnrollStudent';
-import { StudentDatabase } from './StudentDatabase';
-import { MarkAttendance } from './MarkAttendance';
-import { PastRecords } from './PastRecords';
-import { SessionDetails } from './SessionDetails';
-import { TopBar } from './AppBar';
-import { Sidebar, SIDEBAR_WIDTH } from './Sidebar';
-import theme from './theme';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { supabase } from './lib/supabase';
+import { Loader2 } from 'lucide-react';
 
-import { ThemeProvider } from '@mui/material/styles';
-import CssBaseline from '@mui/material/CssBaseline';
-import CircularProgress from '@mui/material/CircularProgress';
-import Box from '@mui/material/Box';
+// Layouts
+import DashboardLayout from './layouts/DashboardLayout';
 
-function AppLayout({ session }) {
-  const location = useLocation();
-  const isAuthPage = location.pathname === '/login';
-  const showChrome = !!session && !isAuthPage;
-
-  return (
-    <Box sx={{ display: 'flex', minHeight: '100vh', bgcolor: 'background.default' }}>
-      {/* Fixed sidebar */}
-      {showChrome && <Sidebar session={session} />}
-
-      {/* Right column: sticky header + scrollable content */}
-      <Box
-        sx={{
-          flex: 1,
-          ml: showChrome ? `${SIDEBAR_WIDTH}px` : 0,
-          display: 'flex',
-          flexDirection: 'column',
-          minHeight: '100vh',
-          // This ensures no background-attachment fixed effects bleed through
-          isolation: 'isolate',
-        }}
-      >
-        {/* ── Top Header Removed per user request ── */}
-
-        {/* ── Scrollable page content ── */}
-        <Box
-          component="main"
-          sx={{
-            flex: 1,
-            bgcolor: '#f8fafc',
-            px: { xs: 2.5, md: 4 },
-            py: 4,
-            overflowY: 'auto',
-          }}
-        >
-          <Routes>
-            <Route path="/" element={!session ? <Navigate to="/login" /> : <Navigate to="/dashboard" />} />
-            <Route path="/login" element={!session ? <Auth /> : <Navigate to="/dashboard" />} />
-            <Route path="/dashboard" element={!session ? <Navigate to="/login" /> : <Dashboard />} />
-            <Route path="/manage" element={!session ? <Navigate to="/login" /> : <ManageHub />} />
-            <Route path="/manage/batches" element={!session ? <Navigate to="/login" /> : <ManageBatches />} />
-            <Route path="/manage/enroll" element={!session ? <Navigate to="/login" /> : <EnrollStudent />} />
-            <Route path="/manage/students" element={!session ? <Navigate to="/login" /> : <StudentDatabase />} />
-            <Route path="/mark-attendance" element={!session ? <Navigate to="/login" /> : <MarkAttendance />} />
-            <Route path="/past-records" element={!session ? <Navigate to="/login" /> : <PastRecords />} />
-            <Route path="/session/:sessionId" element={!session ? <Navigate to="/login" /> : <SessionDetails />} />
-          </Routes>
-        </Box>
-      </Box>
-    </Box>
-  );
-}
+// Pages
+import Auth from './pages/Auth';
+import Dashboard from './pages/Dashboard';
+import ManageHub from './pages/ManageHub';
+import ManageBatches from './pages/ManageBatches';
+import EnrollStudent from './pages/EnrollStudent';
+import StudentDatabase from './pages/StudentDatabase';
+import MarkAttendance from './pages/MarkAttendance';
+import PastRecords from './pages/PastRecords';
+import SessionDetails from './pages/SessionDetails';
 
 function App() {
   const [session, setSession] = useState(null);
@@ -82,30 +26,42 @@ function App() {
       setSession(session);
       setLoading(false);
     });
+
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
     });
+
     return () => subscription.unsubscribe();
   }, []);
 
   if (loading) {
     return (
-      <ThemeProvider theme={theme}>
-        <CssBaseline />
-        <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh', bgcolor: '#f8fafc' }}>
-          <CircularProgress sx={{ color: '#2563eb' }} />
-        </Box>
-      </ThemeProvider>
+      <div className="flex h-screen w-full items-center justify-center bg-secondary">
+        <Loader2 className="h-8 w-8 animate-spin text-accent" />
+      </div>
     );
   }
 
   return (
-    <ThemeProvider theme={theme}>
-      <CssBaseline />
-      <BrowserRouter>
-        <AppLayout session={session} />
-      </BrowserRouter>
-    </ThemeProvider>
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={!session ? <Navigate to="/login" replace /> : <Navigate to="/dashboard" replace />} />
+        
+        <Route path="/login" element={<Auth session={session} />} />
+
+        {/* Protected Dashboard Layout */}
+        <Route element={!session ? <Navigate to="/login" replace /> : <DashboardLayout session={session} />}>
+          <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/manage" element={<ManageHub />} />
+          <Route path="/manage/batches" element={<ManageBatches />} />
+          <Route path="/manage/enroll" element={<EnrollStudent />} />
+          <Route path="/manage/students" element={<StudentDatabase />} />
+          <Route path="/mark-attendance" element={<MarkAttendance session={session} />} />
+          <Route path="/past-records" element={<PastRecords />} />
+          <Route path="/session/:sessionId" element={<SessionDetails />} />
+        </Route>
+      </Routes>
+    </BrowserRouter>
   );
 }
 
